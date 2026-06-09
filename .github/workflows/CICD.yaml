@@ -206,20 +206,6 @@ jobs:
       useArtifactCache: true
       needsContext:  ${{ toJson(needs) }}
 
-  BuildPP:
-    needs: [ Initialization ]
-    if: (!failure()) && (!cancelled()) && needs.Initialization.outputs.powerPlatformSolutionFolder != ''
-    name: Build PowerPlatform Solution
-    uses: ./.github/workflows/_BuildPowerPlatformSolution.yaml
-    secrets: inherit
-    with:
-      shell: ${{ needs.Initialization.outputs.githubRunnerShell }}
-      runsOn: ${{ needs.Initialization.outputs.githubRunner }}
-      parentTelemetryScopeJson: ${{ needs.Initialization.outputs.telemetryScopeJson }}
-      project: ${{ needs.Initialization.outputs.powerPlatformSolutionFolder }}
-      projectName: ${{ needs.Initialization.outputs.powerPlatformSolutionFolder }}
-      publishArtifacts: ${{ github.ref_name == 'main' || startswith(github.ref_name, 'release/') || startswith(github.ref_name, 'releases/') || needs.Initialization.outputs.deliveryTargetsJson != '[]' || needs.Initialization.outputs.environmentCount > 0 }}
-
   CodeAnalysisUpload:
     needs: [ Initialization, Build ]
     if: (!cancelled()) && (needs.Initialization.outputs.trackALAlertsInGitHub == 'True')
@@ -306,8 +292,8 @@ jobs:
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
 
   Deploy:
-    needs: [ Initialization, Build, BuildPP ]
-    if: (!cancelled()) && (needs.Build.result == 'success' || needs.Build.result == 'skipped') && (needs.BuildPP.result == 'success' || needs.BuildPP.result == 'skipped') && needs.Initialization.outputs.environmentCount > 0
+    needs: [ Initialization, Build ]
+    if: (!cancelled()) && (needs.Build.result == 'success' || needs.Build.result == 'skipped') && needs.Initialization.outputs.environmentCount > 0
     strategy: ${{ fromJson(needs.Initialization.outputs.environmentsMatrixJson) }}
     runs-on: ${{ fromJson(matrix.os) }}
     name: Deploy to ${{ matrix.environment }}
@@ -374,8 +360,8 @@ jobs:
           deploymentEnvironmentsJson: ${{ needs.Initialization.outputs.deploymentEnvironmentsJson }}
 
   Deliver:
-    needs: [ Initialization, Build, BuildPP ]
-    if: (!cancelled()) && (needs.Build.result == 'success' || needs.Build.result == 'skipped') && (needs.BuildPP.result == 'success' || needs.BuildPP.result == 'skipped') && needs.Initialization.outputs.deliveryTargetsJson != '[]'
+    needs: [ Initialization, Build ]
+    if: (!cancelled()) && (needs.Build.result == 'success' || needs.Build.result == 'skipped') && needs.Initialization.outputs.deliveryTargetsJson != '[]'
     strategy:
       matrix:
         deliveryTarget: ${{ fromJson(needs.Initialization.outputs.deliveryTargetsJson) }}
@@ -416,7 +402,7 @@ jobs:
           artifacts: '.artifacts'
 
   PostProcess:
-    needs: [ Initialization, Build, BuildPP, Deploy, Deliver, DeployALDoc, CodeAnalysisUpload ]
+    needs: [ Initialization, Build, Deploy, Deliver, DeployALDoc, CodeAnalysisUpload, CustomJob-CreateBuildTag ]
     if: (!cancelled())
     runs-on: [ windows-latest ]
     steps:
@@ -432,3 +418,27 @@ jobs:
           shell: powershell
           telemetryScopeJson: ${{ needs.Initialization.outputs.telemetryScopeJson }}
           currentJobContext: ${{ toJson(job) }}
+
+  # DO NOT EDIT. The following job was added through a custom template.
+  CustomJob-CreateBuildTag:
+    needs: [ Initialization, Build ]
+    if: (!cancelled()) && needs.Build.result == 'success' && github.ref_name == 'main'
+    runs-on: [ windows-latest ]
+    name: Tag successful main build
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+  
+      - name: Create lightweight build tag
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = "build-$(Get-Date -Format 'yyyyMMdd-HHmmss')-${env:GITHUB_RUN_NUMBER}"
+          Write-Host "Tagging commit $env:GITHUB_SHA as $tag"
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git tag $tag
+          git push origin $tag
+          Add-Content -Encoding UTF8 -Path $env:GITHUB_STEP_SUMMARY -Value "Tagged build as ``$tag``"
